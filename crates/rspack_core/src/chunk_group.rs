@@ -313,6 +313,10 @@ impl ChunkGroup {
     &self.origins
   }
 
+  pub fn children(&self) -> &UkeySet<ChunkGroupUkey> {
+    &self.children
+  }
+
   pub fn get_children_by_orders(
     &self,
     compilation: &Compilation,

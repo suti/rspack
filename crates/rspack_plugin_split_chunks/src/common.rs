@@ -119,6 +119,19 @@ impl SplitChunkSizes {
     })
   }
 
+  pub fn multiply(&self, times: usize) -> SplitChunkSizes {
+    SplitChunkSizes(
+      self
+        .iter()
+        .map(|(ty, size)| (*ty, *size * (times as f64)))
+        .collect(),
+    )
+  }
+
+  pub fn total_size(&self) -> u32 {
+    self.iter().fold(0f64, |acc, (_, size)| acc + *size) as u32
+  }
+
   pub fn add_by(&mut self, other: &Self) {
     self.combine_with(other, &|a, b| a + b)
   }
