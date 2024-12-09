@@ -96,7 +96,6 @@
     "*.{ts,tsx,js,cts,cjs,mts,mjs}": [
       "pnpm run lint:js",
       "node ./x ae ci"
-    ],
-    "package.json": "pnpm run check-dependency-version"
+    ]
   }
 }

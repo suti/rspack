@@ -15,4 +15,5 @@ pub use common::{
 pub use options::cache_group::CacheGroup;
 pub use options::cache_group_test::{CacheGroupTest, CacheGroupTestFnCtx};
 pub use options::chunk_name::{ChunkNameGetter, ChunkNameGetterFnCtx};
+pub use plugin::better_chunk::{BetterChunkOptions, BetterChunkStage};
 pub use plugin::{PluginOptions, SplitChunksPlugin};
