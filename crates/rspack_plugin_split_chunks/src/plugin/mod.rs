@@ -1,3 +1,4 @@
+pub(crate) mod better_chunk;
 mod chunk;
 mod max_request;
 mod max_size;
@@ -6,7 +7,7 @@ mod module_group;
 
 use std::{borrow::Cow, fmt::Debug};
 
-use rspack_collections::UkeyMap;
+use rspack_collections::{UkeyMap, UkeySet};
 use rspack_core::{ChunkUkey, Compilation, CompilationOptimizeChunks, Logger, Plugin};
 use rspack_error::Result;
 use rspack_hook::{plugin, plugin_hook};
@@ -23,6 +24,7 @@ pub struct PluginOptions {
   pub cache_groups: Vec<CacheGroup>,
   pub fallback_cache_group: FallbackCacheGroup,
   pub hide_path_info: Option<bool>,
+  pub better_chunk: Option<better_chunk::BetterChunkOptions>,
 }
 
 #[plugin]
@@ -30,6 +32,7 @@ pub struct SplitChunksPlugin {
   cache_groups: Box<[CacheGroup]>,
   fallback_cache_group: FallbackCacheGroup,
   hide_path_info: bool,
+  better_chunk: Option<better_chunk::BetterChunkOptions>,
 }
 
 impl SplitChunksPlugin {
@@ -39,6 +42,7 @@ impl SplitChunksPlugin {
       options.cache_groups.into(),
       options.fallback_cache_group,
       options.hide_path_info.unwrap_or(false),
+      options.better_chunk,
     )
   }
 
@@ -55,6 +59,7 @@ impl SplitChunksPlugin {
 
     let start = logger.time("process module group map");
     let mut max_size_setting_map: UkeyMap<ChunkUkey, MaxSizeSetting> = Default::default();
+    let mut skipped_chunks: UkeySet<ChunkUkey> = Default::default();
 
     while !module_group_map.is_empty() {
       let (module_group_key, mut module_group) = self.find_best_module_group(&mut module_group_map);
@@ -98,7 +103,9 @@ impl SplitChunksPlugin {
 
       let mut used_chunks = Cow::Borrowed(&module_group.chunks);
 
-      self.ensure_max_request_fit(compilation, cache_group, &mut used_chunks);
+        if self.better_chunk.is_none() {
+          self.ensure_max_request_fit(compilation, cache_group, &mut used_chunks);
+        }
 
       if used_chunks.len() != module_group.chunks.len() {
         // There are some chunks removed by `ensure_max_request_fit`
@@ -126,6 +133,7 @@ impl SplitChunksPlugin {
           },
         );
       }
+      skipped_chunks.insert(new_chunk);
 
       self.move_modules_to_new_chunk_and_remove_from_old_chunks(
         &module_group,
@@ -146,9 +154,14 @@ impl SplitChunksPlugin {
     }
     logger.time_end(start);
 
-    let start = logger.time("ensure max size fit");
-    self.ensure_max_size_fit(compilation, max_size_setting_map)?;
-    logger.time_end(start);
+    if let Some(better_chunk) = &self.better_chunk {
+      let points = vec![String::from("bootstrap")];
+      self.better_chunks(compilation, "~", skipped_chunks, &points, better_chunk);
+    } else {
+      let start = logger.time("ensure max size fit");
+      self.ensure_max_size_fit(compilation, max_size_setting_map)?;
+      logger.time_end(start);
+    }
 
     Ok(())
   }

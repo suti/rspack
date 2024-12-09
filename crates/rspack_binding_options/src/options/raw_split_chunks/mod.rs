@@ -1,3 +1,4 @@
+mod better_chunk_options;
 mod raw_split_chunk_cache_group_test;
 mod raw_split_chunk_chunks;
 mod raw_split_chunk_name;
@@ -23,6 +24,7 @@ use self::raw_split_chunk_cache_group_test::RawCacheGroupTest;
 use self::raw_split_chunk_chunks::{create_chunks_filter, Chunks};
 use self::raw_split_chunk_name::default_chunk_option_name;
 use self::raw_split_chunk_size::RawSplitChunkSizes;
+use crate::options::raw_split_chunks::better_chunk_options::RawBetterChunkOptions;
 
 #[derive(Derivative)]
 #[napi(object, object_to_js = false)]
@@ -52,6 +54,7 @@ pub struct RawSplitChunksOptions {
   pub max_size: Option<Either<f64, RawSplitChunkSizes>>,
   pub max_async_size: Option<Either<f64, RawSplitChunkSizes>>,
   pub max_initial_size: Option<Either<f64, RawSplitChunkSizes>>,
+  pub better_chunk: Option<RawBetterChunkOptions>,
 }
 
 #[derive(Derivative)]
@@ -264,6 +267,9 @@ impl From<RawSplitChunksOptions> for rspack_plugin_split_chunks::PluginOptions {
           .unwrap_or(overall_automatic_name_delimiter.clone()),
       },
       hide_path_info: raw_opts.hide_path_info,
+      better_chunk: raw_opts
+        .better_chunk
+        .map(|better_chunk| better_chunk.into()),
     }
   }
 }
