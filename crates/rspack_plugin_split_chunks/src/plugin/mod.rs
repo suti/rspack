@@ -1,3 +1,4 @@
+mod better_chunk;
 mod chunk;
 mod max_request;
 mod max_size;
@@ -6,7 +7,7 @@ mod module_group;
 
 use std::{borrow::Cow, fmt::Debug};
 
-use rspack_collections::UkeyMap;
+use rspack_collections::{UkeyMap, UkeySet};
 use rspack_core::{ChunkUkey, Compilation, CompilationOptimizeChunks, Logger, Plugin};
 use rspack_error::Result;
 use rspack_hook::{plugin, plugin_hook};
@@ -55,6 +56,7 @@ impl SplitChunksPlugin {
 
     let start = logger.time("process module group map");
     let mut max_size_setting_map: UkeyMap<ChunkUkey, MaxSizeSetting> = Default::default();
+    let mut skipped_chunks: UkeySet<ChunkUkey> = Default::default();
 
     while !module_group_map.is_empty() {
       let (module_group_key, mut module_group) = self.find_best_module_group(&mut module_group_map);
@@ -126,6 +128,7 @@ impl SplitChunksPlugin {
           },
         );
       }
+      skipped_chunks.insert(new_chunk);
 
       self.move_modules_to_new_chunk_and_remove_from_old_chunks(
         &module_group,
@@ -147,7 +150,9 @@ impl SplitChunksPlugin {
     logger.time_end(start);
 
     let start = logger.time("ensure max size fit");
-    self.ensure_max_size_fit(compilation, max_size_setting_map)?;
+    // self.ensure_max_size_fit(compilation, max_size_setting_map)?;
+    let points = vec![String::from("bootstrap")];
+    self.better_chunks(compilation, "~", Default::default(), &points);
     logger.time_end(start);
 
     Ok(())
