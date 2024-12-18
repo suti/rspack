@@ -193,8 +193,11 @@ fn find_best_parent_and_orphans(
   for path in paths.iter() {
     let mut best_parent = None;
 
-    // 从路径的开头向后查找最远的公共父节点
-    for node in path.iter() {
+    // 从路径的开头向后查找最远的公共父节点, 最多找3个
+    for (index, node) in path.iter().enumerate() {
+      if index > 2 {
+        break;
+      }
       if let Some(&count) = node_count.get(node) {
         if count > 1 {
           best_parent = Some(*node);
@@ -971,17 +974,14 @@ impl ChunkMutation {
 
   fn concat_chunks(
     &mut self,
-    size_limit: &(SplitChunkSizes, SplitChunkSizes),
+    size_limit: &(u32, u32),
     compilation: &mut Compilation,
   ) -> Option<()> {
     let chunk_ref = &self.chunks;
     let mut small_chunks = chunk_ref
       .values()
       .filter_map(|cd| {
-        if !cd.is_empty()
-          && cd
-            .chunk_size(&self.chunks, &self.modules)
-            .smaller_than(&size_limit.0)
+        if !cd.is_empty() && cd.chunk_size(&self.chunks, &self.modules).total_size() < size_limit.0
         {
           Some(cd.chunk_key)
         } else {
@@ -1039,21 +1039,19 @@ impl ChunkMutation {
               .get(chunk)
               .map_or(false, |chunk| chunk.name().is_none())
             && self.chunks.get(chunk).map_or(false, |chunk| {
-              chunk
-                .chunk_size(&self.chunks, &self.modules)
-                .smaller_than(&size_limit.1)
+              chunk.chunk_size(&self.chunks, &self.modules).total_size() < size_limit.1
             })
             && Self::can_chunks_be_integrated(chunk, &small_chunk_key, &compilation).expect("")
         })
         .collect::<Vec<_>>();
-      can_be_integrated_withs.sort_by(|a, b| {
-        compare_chunks_with_graph(
-          &compilation.chunk_graph,
-          &compilation.get_module_graph(),
-          a,
-          b,
-        )
-      });
+      // can_be_integrated_withs.sort_by(|a, b| {
+      //   compare_chunks_with_graph(
+      //     &compilation.chunk_graph,
+      //     &compilation.get_module_graph(),
+      //     a,
+      //     b,
+      //   )
+      // });
 
       let Some(best_chunk_key) = ({
         let mut target: Option<ChunkUkey> = None;
@@ -1073,9 +1071,7 @@ impl ChunkMutation {
           if let Some(target) = target {
             if target != small_chunk_key {
               let chunk = self.chunks.get(&target)?;
-              if chunk
-                .chunk_size(&self.chunks, &self.modules)
-                .smaller_than(&size_limit.1)
+              if chunk.chunk_size(&self.chunks, &self.modules).total_size() < size_limit.1
                 && Self::can_chunks_be_integrated(&target, &small_chunk_key, &compilation)?
               {
                 break;
@@ -1105,7 +1101,8 @@ impl ChunkMutation {
         let best_chunk = self.chunks.get(&best_chunk_key)?;
         best_chunk
           .chunk_size(&self.chunks, &self.modules)
-          .bigger_than(&size_limit.0)
+          .total_size()
+          > size_limit.0
       } {
         small_chunks.retain(|&chunk| chunk != best_chunk_key);
       }
@@ -1141,14 +1138,14 @@ impl ChunkMutation {
         {
           let integrated_chunk = self.chunks.get(&integrated_chunk_key)?;
           let integrated_chunk_size = integrated_chunk.chunk_size(&self.chunks, &self.modules);
-          if integrated_chunk_size.bigger_than(&size_limit.0) {
+          if integrated_chunk_size.total_size() > size_limit.0 {
             integrated_chunk_key = small_chunk_key;
             continue;
           }
           let small_chunk = self.chunks.get(&small_chunk_key)?;
           let mut small_chunk_size = small_chunk.chunk_size(&self.chunks, &self.modules);
           small_chunk_size.add_by(&integrated_chunk_size);
-          if small_chunk_size.bigger_than(&size_limit.0) {
+          if small_chunk_size.total_size() > size_limit.0 {
             integrated_chunk_key = small_chunk_key;
             continue;
           }
@@ -1184,14 +1181,14 @@ impl ChunkMutation {
         {
           let integrated_chunk = self.chunks.get(&integrated_chunk_key)?;
           let integrated_chunk_size = integrated_chunk.chunk_size(&self.chunks, &self.modules);
-          if integrated_chunk_size.bigger_than(&size_limit.0) {
+          if integrated_chunk_size.total_size() > size_limit.0 {
             integrated_chunk_key = small_chunk_key;
             continue;
           }
           let small_chunk = self.chunks.get(&small_chunk_key)?;
           let mut small_chunk_size = small_chunk.chunk_size(&self.chunks, &self.modules);
           small_chunk_size.add_by(&integrated_chunk_size);
-          if small_chunk_size.bigger_than(&size_limit.0) {
+          if small_chunk_size.total_size() > size_limit.0 {
             integrated_chunk_key = small_chunk_key;
             continue;
           }
@@ -1275,19 +1272,13 @@ impl ChunkMutation {
     });
   }
 
-  fn split_chunks(
-    &mut self,
-    size_limit: &(SplitChunkSizes, SplitChunkSizes),
-    compilation: &mut Compilation,
-  ) {
+  fn split_chunks(&mut self, size_limit: &(u32, u32), compilation: &mut Compilation) {
     let chunk_ref = &self.chunks;
     let mut big_chunks = chunk_ref
       .values()
       .filter(|cd| !cd.is_empty())
       .filter_map(|cd| {
-        cd.chunk_size(chunk_ref, &self.modules)
-          .bigger_than(&size_limit.1)
-          .then(|| cd.chunk_key)
+        (cd.chunk_size(chunk_ref, &self.modules).total_size() > size_limit.1).then(|| cd.chunk_key)
       })
       .collect::<Vec<_>>();
     big_chunks.into_iter().for_each(|chunk_key| {
@@ -1302,7 +1293,7 @@ impl ChunkMutation {
             let current = new_chunks_with_modules.last_mut().unwrap();
             current.push(*module_id);
             current_size.add_by(&module.size);
-            if current_size.bigger_than(&size_limit.0) {
+            if current_size.total_size() > size_limit.0 {
               new_chunks_with_modules.push(vec![]);
               current_size = SplitChunkSizes::empty();
             }
@@ -1356,16 +1347,7 @@ impl SplitChunksPlugin {
   ) {
     let logger = compilation.get_logger(self.name());
     let compilation_ref = &*compilation;
-    let size_limit = (
-      SplitChunkSizes::with_initial_value(
-        &[SourceType::JavaScript, SourceType::Unknown],
-        600. * 1024.0,
-      ),
-      SplitChunkSizes::with_initial_value(
-        &[SourceType::JavaScript, SourceType::Unknown],
-        1200. * 1024.0,
-      ),
-    );
+    let size_limit = (800 * 1024, 1600 * 1024);
 
     let mut chunk_mutation = ChunkMutation::create(compilation, delimiter, skipped_chunks);
 
@@ -1416,7 +1398,7 @@ impl SplitChunksPlugin {
 
     chunk_mutation.concat_chunks(&size_limit, compilation);
 
-    chunk_mutation.split_chunks(&size_limit, compilation);
+    chunk_mutation.split_chunks(&(1000 * 1024, 1200 * 1024), compilation);
 
     logger.info(format!(
       "entry_points {:?}",
