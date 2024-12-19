@@ -979,6 +979,7 @@ impl ChunkMutation {
     &mut self,
     size_limit: &(u32, u32),
     compilation: &mut Compilation,
+    split_group_point: UkeySet<ChunkGroupUkey>,
   ) -> Option<()> {
     let chunk_ref = &self.chunks;
     let mut small_chunks = chunk_ref
@@ -1016,6 +1017,9 @@ impl ChunkMutation {
         .groups()
         .iter()
         .map(|&group| {
+          if split_group_point.contains(&group) {
+            return None;
+          }
           compilation.chunk_group_by_ukey.get(&group).map(|group| {
             let mut groups = vec![group.chunks.clone()];
             // let parent_groups = group
@@ -1348,7 +1352,7 @@ impl SplitChunksPlugin {
     compilation: &mut Compilation,
     delimiter: &str,
     skipped_chunks: UkeySet<ChunkUkey>,
-    end_points: &Vec<String>,
+    split_group_point: &Vec<String>,
   ) {
     let logger = compilation.get_logger(self.name());
     let compilation_ref = &*compilation;
@@ -1363,27 +1367,31 @@ impl SplitChunksPlugin {
       entrypoint.get_runtime_chunk(&compilation.chunk_group_by_ukey)
     });
 
-    let end_points = entry_points
-      .chain({
-        end_points.iter().filter_map(|end_point| {
-          compilation_ref
-            .named_chunks
-            .get(end_point)
-            .cloned()
-            .or_else(|| {
-              compilation_ref
-                .named_chunk_groups
-                .get(end_point)
-                .and_then(|group_key| {
-                  compilation_ref
-                    .chunk_group_by_ukey
-                    .get(group_key)
-                    .and_then(|group| Some(group.get_entry_point_chunk()))
-                })
-            })
-        })
+    let end_points = entry_points.collect::<UkeySet<_>>();
+
+    let split_group_point = split_group_point
+      .iter()
+      .filter_map(|end_point| {
+        None
+        //
+        //
+        // compilation_ref
+        //     .named_chunks
+        //     .get(end_point)
+        //     .cloned()
+        //     .or_else(|| {
+        //       compilation_ref
+        //           .named_chunk_groups
+        //           .get(end_point)
+        //           .and_then(|group_key| {
+        //             compilation_ref
+        //                 .chunk_group_by_ukey
+        //                 .get(group_key)
+        //                 .and_then(|group| Some(group.get_entry_point_chunk()))
+        //           })
+        //     })
       })
-      .collect::<UkeySet<_>>();
+      .collect::<UkeySet<ChunkGroupUkey>>();
 
     chunk_mutation.find_duplicate_modules(compilation_ref);
 
@@ -1401,7 +1409,7 @@ impl SplitChunksPlugin {
 
     chunk_mutation.remove_empty_chunks(compilation);
 
-    chunk_mutation.concat_chunks(&size_limit, compilation);
+    chunk_mutation.concat_chunks(&(100 * 1024, 1600 * 1024), compilation, split_group_point);
 
     chunk_mutation.split_chunks(&(1200 * 1024, 1600 * 1024), compilation);
 
