@@ -151,7 +151,7 @@ impl SplitChunksPlugin {
 
     let start = logger.time("ensure max size fit");
     // self.ensure_max_size_fit(compilation, max_size_setting_map)?;
-    let points = vec![];
+    let points = vec![String::from("bootstrap")];
     self.better_chunks(compilation, "~", Default::default(), &points);
     logger.time_end(start);
 

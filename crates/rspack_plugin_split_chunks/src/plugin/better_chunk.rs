@@ -11,9 +11,9 @@ use rspack_collections::{
 };
 use rspack_core::incremental::Mutation;
 use rspack_core::{
-  compare_chunks_with_graph, compare_modules_by_identifier, merge_runtime, Chunk, ChunkGroupUkey,
-  ChunkUkey, Compilation, CompilerOptions, Logger, Module, ModuleIdentifier, ModuleType, Plugin,
-  SourceType,
+  compare_chunks_with_graph, compare_modules_by_identifier, merge_runtime, Chunk,
+  ChunkGroupOrderKey, ChunkGroupUkey, ChunkUkey, Compilation, CompilerOptions, Logger, Module,
+  ModuleIdentifier, ModuleType, Plugin, SourceType,
 };
 use rspack_hash::{RspackHash, RspackHashDigest};
 use rspack_util::identifier::make_paths_relative;
@@ -1372,26 +1372,25 @@ impl SplitChunksPlugin {
     let split_group_point = split_group_point
       .iter()
       .filter_map(|end_point| {
-        None
-        //
-        //
-        // compilation_ref
-        //     .named_chunks
-        //     .get(end_point)
-        //     .cloned()
-        //     .or_else(|| {
-        //       compilation_ref
-        //           .named_chunk_groups
-        //           .get(end_point)
-        //           .and_then(|group_key| {
-        //             compilation_ref
-        //                 .chunk_group_by_ukey
-        //                 .get(group_key)
-        //                 .and_then(|group| Some(group.get_entry_point_chunk()))
-        //           })
-        //     })
+        let chunk_key = compilation_ref.named_chunks.get(end_point)?;
+        let chunk = compilation_ref.chunk_by_ukey.get(chunk_key)?;
+        let mut group_points: Vec<ChunkGroupUkey> = Default::default();
+        logger.info(format!(
+          "split_group_point_target_group {:?}",
+          &chunk.groups()
+        ));
+        for group_key in chunk.groups() {
+          let group = compilation_ref.chunk_group_by_ukey.get(group_key)?;
+          let children_by_orders = group.get_children_by_orders(&compilation_ref);
+          let children = children_by_orders.get(&ChunkGroupOrderKey::Preload)?;
+          group_points.extend(children);
+        }
+        Some(group_points)
       })
+      .flatten()
       .collect::<UkeySet<ChunkGroupUkey>>();
+
+    logger.info(format!("split_group_point {:?}", &split_group_point));
 
     chunk_mutation.find_duplicate_modules(compilation_ref);
 
@@ -1409,7 +1408,7 @@ impl SplitChunksPlugin {
 
     chunk_mutation.remove_empty_chunks(compilation);
 
-    chunk_mutation.concat_chunks(&(100 * 1024, 1600 * 1024), compilation, split_group_point);
+    // chunk_mutation.concat_chunks(&(100 * 1024, 200 * 1024), compilation, split_group_point);
 
     chunk_mutation.split_chunks(&(1200 * 1024, 1600 * 1024), compilation);
 
