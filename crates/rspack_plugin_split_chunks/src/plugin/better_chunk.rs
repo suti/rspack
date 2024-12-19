@@ -12,7 +12,8 @@ use rspack_collections::{
 use rspack_core::incremental::Mutation;
 use rspack_core::{
   compare_chunks_with_graph, compare_modules_by_identifier, merge_runtime, Chunk, ChunkGroupUkey,
-  ChunkUkey, Compilation, CompilerOptions, Logger, Module, ModuleIdentifier, Plugin, SourceType,
+  ChunkUkey, Compilation, CompilerOptions, Logger, Module, ModuleIdentifier, ModuleType, Plugin,
+  SourceType,
 };
 use rspack_hash::{RspackHash, RspackHashDigest};
 use rspack_util::identifier::make_paths_relative;
@@ -57,7 +58,8 @@ struct ModuleItem {
   module: ModuleIdentifier,
   size: SplitChunkSizes,
   key: String,
-  is_js: bool,
+  module_type: ModuleType,
+  is_shared: bool,
   skip_duplicate_check: bool,
 }
 
@@ -464,6 +466,19 @@ struct ChunkMutation {
   entry_chunks: UkeySet<ChunkUkey>,
 }
 
+fn contains_shared_module(compilation: &Compilation, chunk_key: &ChunkUkey) -> bool {
+  let mg = compilation.get_module_graph();
+  let modules = compilation.chunk_graph.get_chunk_modules(chunk_key, &mg);
+  modules.iter().any(|module| {
+    matches!(
+      module.module_type(),
+      ModuleType::ConsumeShared
+        | ModuleType::ProvideShared
+        | ModuleType::Fallback
+        | ModuleType::Remote
+    )
+  })
+}
 impl ChunkMutation {
   fn create(
     compilation: &Compilation,
@@ -480,9 +495,14 @@ impl ChunkMutation {
           // let module: &dyn Module = &*module;
 
           let is_external = module.as_external_module().is_some();
+          let is_shared = matches!(
+            module.module_type(),
+            ModuleType::ConsumeShared
+              | ModuleType::ProvideShared
+              | ModuleType::Fallback
+              | ModuleType::Remote
+          );
           // let is_concatenated = module.as_concatenated_module().is_some();
-
-          let js_module = module.module_type().is_js_like();
 
           let name: String = if module.name_for_condition().is_some() {
             make_paths_relative(context, module.identifier().as_str())
@@ -504,7 +524,8 @@ impl ChunkMutation {
               module: module.identifier(),
               size: get_size(module, compilation),
               key: request_to_id(&key),
-              is_js: js_module,
+              module_type: *module.module_type(),
+              is_shared,
               skip_duplicate_check: is_external,
             },
           )
@@ -629,8 +650,7 @@ impl ChunkMutation {
           .iter()
           .map(|id| self.modules.get(id).expect(""))
         {
-          if module_item.is_js
-            && !module_item.skip_duplicate_check
+          if !module_item.skip_duplicate_check
             && !self.skipped_modules.contains(&module_item.module)
           {
             *module_count.entry(module_item.module.clone()).or_insert(0) += 1;
@@ -900,47 +920,30 @@ impl ChunkMutation {
     chunk_a_ukey: &ChunkUkey,
     chunk_b_ukey: &ChunkUkey,
     compilation: &Compilation,
+    check_loop: bool,
   ) -> Option<bool> {
-    let chunk_a = compilation.chunk_by_ukey.get(chunk_a_ukey)?;
-    let chunk_b = compilation.chunk_by_ukey.get(chunk_b_ukey)?;
-    let deps_loop = chunk_b
-      .get_all_referenced_chunks(&compilation.chunk_group_by_ukey)
-      .contains(chunk_a_ukey);
-    if deps_loop {
+    if check_loop {
+      let chunk_b = compilation.chunk_by_ukey.get(chunk_b_ukey)?;
+      let deps_loop = chunk_b
+        .get_all_referenced_chunks(&compilation.chunk_group_by_ukey)
+        .contains(chunk_a_ukey);
+      if deps_loop {
+        return Some(false);
+      }
+    }
+
+    if contains_shared_module(compilation, chunk_a_ukey)
+      || contains_shared_module(compilation, chunk_b_ukey)
+    {
       return Some(false);
     }
 
-    let chunk_a_reason = chunk_a.chunk_reason();
-    let chunk_b_reason = chunk_b.chunk_reason();
-    let check_split = match (chunk_a_reason, chunk_b_reason) {
-      (None, None) => true,
-      (Some(reason), None) | (None, Some(reason)) => {
-        reason != "BetterChunk split from duplicate modules"
-      }
-      (Some(reason_a), Some(reason_b)) => {
-        if reason_a == reason_b {
-          true
-        } else {
-          if reason_a == "BetterChunk split from duplicate modules"
-            || reason_b == "BetterChunk split from duplicate modules"
-          {
-            false
-          } else {
-            true
-          }
-        }
-      }
-    };
-    Some(
-      // check_split &&
-      !deps_loop
-        && compilation.chunk_graph.can_chunks_be_integrated(
-          chunk_a_ukey,
-          chunk_b_ukey,
-          &compilation.chunk_by_ukey,
-          &compilation.chunk_group_by_ukey,
-        ),
-    )
+    Some(compilation.chunk_graph.can_chunks_be_integrated(
+      chunk_a_ukey,
+      chunk_b_ukey,
+      &compilation.chunk_by_ukey,
+      &compilation.chunk_group_by_ukey,
+    ))
   }
 
   fn integrate_chunks(
@@ -981,7 +984,9 @@ impl ChunkMutation {
     let mut small_chunks = chunk_ref
       .values()
       .filter_map(|cd| {
-        if !cd.is_empty() && cd.chunk_size(&self.chunks, &self.modules).total_size() < size_limit.0
+        if !cd.is_empty()
+          && cd.chunk_size(&self.chunks, &self.modules).total_size() < size_limit.0
+          && !contains_shared_module(compilation, &cd.chunk_key)
         {
           Some(cd.chunk_key)
         } else {
@@ -1041,7 +1046,8 @@ impl ChunkMutation {
             && self.chunks.get(chunk).map_or(false, |chunk| {
               chunk.chunk_size(&self.chunks, &self.modules).total_size() < size_limit.1
             })
-            && Self::can_chunks_be_integrated(chunk, &small_chunk_key, &compilation).expect("")
+            && Self::can_chunks_be_integrated(chunk, &small_chunk_key, &compilation, false)
+              .expect("")
         })
         .collect::<Vec<_>>();
       // can_be_integrated_withs.sort_by(|a, b| {
@@ -1072,7 +1078,7 @@ impl ChunkMutation {
             if target != small_chunk_key {
               let chunk = self.chunks.get(&target)?;
               if chunk.chunk_size(&self.chunks, &self.modules).total_size() < size_limit.1
-                && Self::can_chunks_be_integrated(&target, &small_chunk_key, &compilation)?
+                && Self::can_chunks_be_integrated(&target, &small_chunk_key, &compilation, false)?
               {
                 break;
               }
@@ -1151,7 +1157,12 @@ impl ChunkMutation {
           }
         }
 
-        if Self::can_chunks_be_integrated(&integrated_chunk_key, &small_chunk_key, &compilation)? {
+        if Self::can_chunks_be_integrated(
+          &integrated_chunk_key,
+          &small_chunk_key,
+          &compilation,
+          false,
+        )? {
           let small_chunk_appended_chunk = {
             let small_chunk = self.chunks.get_mut(&small_chunk_key)?;
             small_chunk.removed = true;
@@ -1195,8 +1206,12 @@ impl ChunkMutation {
         }
 
         let Some(integrated_chunk_key) = last_small_chunks.iter().find_map(|&chunk| {
-          if Self::can_chunks_be_integrated(&integrated_chunk_key, &small_chunk_key, &compilation)?
-          {
+          if Self::can_chunks_be_integrated(
+            &integrated_chunk_key,
+            &small_chunk_key,
+            &compilation,
+            false,
+          )? {
             Some(chunk)
           } else {
             None
@@ -1224,16 +1239,6 @@ impl ChunkMutation {
     }
 
     Some(())
-  }
-
-  fn concat_chunks_by_group(
-    &mut self,
-    compilation: &mut Compilation,
-    group_size_limit: &(SplitChunkSizes, SplitChunkSizes),
-  ) {
-    // let min_chunks = compilation.chunk_by_ukey.values().filter(|chunk| {
-    //
-    // });
   }
 
   fn remove_empty_chunks(&mut self, compilation: &mut Compilation) {
@@ -1398,7 +1403,7 @@ impl SplitChunksPlugin {
 
     chunk_mutation.concat_chunks(&size_limit, compilation);
 
-    chunk_mutation.split_chunks(&(1000 * 1024, 1200 * 1024), compilation);
+    chunk_mutation.split_chunks(&(1200 * 1024, 1600 * 1024), compilation);
 
     logger.info(format!(
       "entry_points {:?}",
