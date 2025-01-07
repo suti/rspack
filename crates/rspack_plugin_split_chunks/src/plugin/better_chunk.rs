@@ -755,58 +755,10 @@ impl ChunkMutation {
       .disconnect_chunk_and_module(&origin_chunk_key, module_id);
   }
 
-  fn remove_entry_duplicate_modules(
-    &mut self,
-    compilation: &mut Compilation,
-    extend_chunks: &UkeySet<ChunkUkey>,
-  ) -> usize {
-    let mut move_module_to_entry_chunk: IdentifierMap<UkeySet<ChunkUkey>> = Default::default();
-    let mut leave = 0usize;
-    self
-      .duplicate_module_chunk
-      .iter()
-      .for_each(|(&module_id, chunks)| {
-        let mut new_chunks = chunks.clone();
-        new_chunks
-          .retain(|chunk| !self.entry_chunks.contains(chunk) || !extend_chunks.contains(chunk));
-        if new_chunks.len() < chunks.len() {
-          if chunks.len() - new_chunks.len() > 1 {
-            leave += 1;
-          }
-          new_chunks.iter().for_each(|&removed_chunk| {
-            let chunk_d = self
-              .chunks
-              .get_mut(&removed_chunk)
-              .expect("[remove_duplicate_modules] removed_chunk not found in chunk_mutation_map");
-            chunk_d.remove_duplicate_modules(module_id);
-          });
-          move_module_to_entry_chunk.insert(module_id, new_chunks);
-        }
-      });
-
-    let logger = compilation.get_logger(String::from("remove_entry_duplicate_modules"));
-    logger.info(format!(
-      "move_module_to_entry_chunk {:#?}",
-      &move_module_to_entry_chunk
-    ));
-    // move modules to entry chunk
-    move_module_to_entry_chunk
-      .iter()
-      .for_each(|(&module_id, chunks)| {
-        chunks.iter().for_each(|&chunk| {
-          compilation
-            .chunk_graph
-            .disconnect_chunk_and_module(&chunk, module_id);
-        })
-      });
-    // self.entry_chunks.iter().chain(extend_chunks.iter()).for_each(|&chunk| {});
-    leave
-  }
-
   fn remove_duplicate_modules(
     &mut self,
     compilation: &mut Compilation,
-    stage_module_chunks: Vec<(IdentifierSet, UkeySet<ChunkUkey>)>,
+    stage_module_chunks: &Vec<IdentifierSet>,
   ) -> Option<()> {
     let mut move_module_to_entry_chunk: IdentifierMap<UkeySet<ChunkUkey>> = Default::default();
     let mut duplicate_modules: IdentifierSet = Default::default();
@@ -844,11 +796,12 @@ impl ChunkMutation {
     // let logger = compilation.get_logger(String::from("remove_duplicate_modules"));
 
     // 筛出stage中的重复module，将同一stage的重复module合并到同一个chunk中
-    stage_module_chunks.iter().for_each(|(modules, chunks)| {
-      let stage_modules = modules
+    stage_module_chunks.iter().for_each(|modules| {
+      let mut stage_modules = modules
         .intersection(&duplicate_modules)
         .cloned()
         .collect::<IdentifierSet>();
+      stage_modules.retain(|module| !module_chunk_map.contains_key(module));
       duplicate_modules.retain(|&module_id| !stage_modules.contains(&module_id));
       // logger.info(format!(
       //   "stage_modules {} {:#?}",
@@ -1120,7 +1073,7 @@ impl ChunkMutation {
   fn optimize_stage_module_chunks(
     &mut self,
     compilation: &mut Compilation,
-    stage_module_chunks: Vec<(IdentifierSet, UkeySet<ChunkUkey>)>,
+    stage_chunks: Vec<UkeySet<ChunkUkey>>,
   ) -> Vec<(usize, usize)> {
     let entries = compilation
       .entrypoints
@@ -1136,9 +1089,9 @@ impl ChunkMutation {
       .cloned()
       .collect::<UkeySet<ChunkUkey>>();
 
-    stage_module_chunks
+    stage_chunks
       .into_iter()
-      .filter_map(|(modules, chunks)| {
+      .filter_map(|chunks| {
         let mut chunks = chunks.into_iter().collect::<Vec<_>>();
         chunks.retain(|c| !entries.contains(c));
 
@@ -1182,7 +1135,7 @@ impl ChunkMutation {
     size_limit: &(u32, u32),
     compilation: &mut Compilation,
     split_group_point: UkeySet<ChunkGroupUkey>,
-    stage_module_chunks: Vec<(IdentifierSet, UkeySet<ChunkUkey>)>,
+    stage_chunks: Vec<UkeySet<ChunkUkey>>,
     concat_unrelated_chunks: bool,
   ) -> Option<()> {
     let chunk_ref = &self.chunks;
@@ -1218,16 +1171,13 @@ impl ChunkMutation {
       let Some(small_chunk_key) = small_chunks.pop() else {
         break;
       };
-      let is_in_stage = stage_module_chunks
-        .iter()
-        .enumerate()
-        .find_map(|(index, (_, chunks))| {
-          if chunks.contains(&small_chunk_key) {
-            Some(index)
-          } else {
-            None
-          }
-        });
+      let is_in_stage = stage_chunks.iter().enumerate().find_map(|(index, chunks)| {
+        if chunks.contains(&small_chunk_key) {
+          Some(index)
+        } else {
+          None
+        }
+      });
       let small_chunk = compilation.chunk_by_ukey.get(&small_chunk_key)?;
 
       let can_be_integrated_withs = small_chunk
@@ -1283,15 +1233,14 @@ impl ChunkMutation {
       }
 
       if let Some(is_in_stage) = is_in_stage {
-        let stage_chunks = &stage_module_chunks[is_in_stage].1;
+        let stage_chunks = &stage_chunks[is_in_stage];
         can_be_integrated_withs = can_be_integrated_withs
           .into_iter()
           .filter(|chunk| stage_chunks.contains(&chunk))
           .collect()
       } else {
-        let stage_chunks = &stage_module_chunks
+        let stage_chunks = &stage_chunks
           .iter()
-          .map(|(_, chunks)| chunks.iter())
           .flatten()
           .cloned()
           .collect::<UkeySet<ChunkUkey>>();
@@ -1347,19 +1296,16 @@ impl ChunkMutation {
     if !concat_unrelated_chunks {
       not_found_best_chunk.clear();
     }
-    let mut small_chunks_in_stages: Vec<Vec<ChunkUkey>> = vec![vec![]; stage_module_chunks.len()];
+    let mut small_chunks_in_stages: Vec<Vec<ChunkUkey>> = vec![vec![]; stage_chunks.len()];
     not_found_best_chunk.retain(|chunk| {
-      !stage_module_chunks
-        .iter()
-        .enumerate()
-        .any(|(index, (_, chunks))| {
-          if chunks.contains(&chunk) {
-            small_chunks_in_stages[index].push(chunk.clone());
-            true
-          } else {
-            false
-          }
-        })
+      !stage_chunks.iter().enumerate().any(|(index, chunks)| {
+        if chunks.contains(&chunk) {
+          small_chunks_in_stages[index].push(chunk.clone());
+          true
+        } else {
+          false
+        }
+      })
     });
     small_chunks_in_stages
       .into_iter()
@@ -1592,6 +1538,23 @@ fn pick_shared_module_chunk(
       assert_eq!(mc.len(), 1);
       let chunk = mc.iter().next()?;
       let module = mg.module_by_identifier(&module_id)?;
+
+      let children_chunks = {
+        let chunk = compilation.chunk_by_ukey.get(&chunk)?;
+        chunk
+          .groups()
+          .iter()
+          .filter_map(|cgk| {
+            let cg = compilation.chunk_group_by_ukey.get(cgk)?;
+            Some(cg.children().iter().filter_map(|cgk| {
+              let cg = compilation.chunk_group_by_ukey.get(cgk)?;
+              Some(cg.chunks.clone())
+            }))
+          })
+          .flatten()
+          .flatten()
+          .collect::<UkeySet<ChunkUkey>>()
+      };
       // shared expose module
       let mut deps = module
         .get_dependencies()
@@ -1606,6 +1569,7 @@ fn pick_shared_module_chunk(
             .chunk_graph
             .get_module_chunks(dep)
             .into_iter()
+            .filter(|ck| children_chunks.contains(ck))
             .map(|chunk| {
               compilation
                 .chunk_graph
@@ -1626,11 +1590,12 @@ fn pick_shared_module_chunk(
   module_map
 }
 
-pub(crate) fn pick_entry_module_chunk(
+pub(crate) fn pick_entry_modules(
   compilation: &Compilation,
   entries: &Vec<(String, Option<(ChunkGroupOrderKey, usize)>)>,
-) -> (IdentifierSet, UkeySet<ChunkUkey>) {
+) -> IdentifierSet {
   let runtimes: UkeySet<ChunkUkey> = compilation.get_chunk_graph_entries().collect();
+  let logger = compilation.get_logger(String::from("pick_entry_module_chunk"));
   let chunks = entries
     .iter()
     .filter_map(|(entry_name, find_child)| {
@@ -1662,6 +1627,46 @@ pub(crate) fn pick_entry_module_chunk(
           }
         }
       }
+      // logger.info(format!(
+      //   "groups {:#?}",
+      //   groups
+      //     .iter()
+      //     .map(|&cgu| (
+      //       compilation.chunk_group_by_ukey.expect_get(&cgu).name(),
+      //       compilation
+      //         .chunk_group_by_ukey
+      //         .expect_get(&cgu)
+      //         .chunks
+      //         .len(),
+      //       compilation
+      //         .chunk_group_by_ukey
+      //         .expect_get(&cgu)
+      //         .chunks
+      //         .iter()
+      //         .map(|chunk| compilation.chunk_by_ukey.expect_get(&chunk).name())
+      //         .collect::<Vec<_>>(),
+      //       {
+      //         let mg = compilation.get_module_graph();
+      //         compilation
+      //           .chunk_group_by_ukey
+      //           .expect_get(&cgu)
+      //           .chunks
+      //           .iter()
+      //           .map(|chunk| {
+      //             compilation
+      //               .chunk_graph
+      //               .get_chunk_modules(chunk, &mg)
+      //               .iter()
+      //               .filter_map(|module| module.name_for_condition().map(|name| name.to_string()))
+      //               .collect::<Vec<_>>()
+      //           })
+      //           .flatten()
+      //           .collect::<Vec<_>>()
+      //           .len()
+      //       },
+      //     ))
+      //     .collect::<Vec<_>>()
+      // ));
       Some(groups)
     })
     .flatten()
@@ -1686,19 +1691,39 @@ pub(crate) fn pick_entry_module_chunk(
     .flatten()
     .cloned()
     .collect::<IdentifierSet>();
-  (modules, chunks)
+  modules
 }
 
-pub(crate) fn pick_stage_chunks(
+fn pick_chunks_from_modules(
+  compilation: &Compilation,
+  modules: &Vec<IdentifierSet>,
+) -> Vec<UkeySet<ChunkUkey>> {
+  let mut visited_chunks: UkeySet<ChunkUkey> = Default::default();
+  modules
+    .iter()
+    .map(|modules| {
+      let mut chunks = modules
+        .iter()
+        .map(|&module| compilation.chunk_graph.get_module_chunks(module))
+        .flatten()
+        .cloned()
+        .collect::<UkeySet<ChunkUkey>>();
+      chunks.retain(|chunk| !visited_chunks.contains(chunk));
+      visited_chunks.extend(&chunks);
+      chunks
+    })
+    .collect::<Vec<_>>()
+}
+
+pub(crate) fn pick_stage_modules(
   compilation: &Compilation,
   stages: &Vec<BetterChunkStage>,
   shared_module_chunks: &HashMap<String, (ModuleIdentifier, ChunkUkey, IdentifierSet)>,
   keep_magic_chunks: &Vec<ChunkGroupOrderKey>,
   strict: bool,
-) -> Vec<(IdentifierSet, UkeySet<ChunkUkey>)> {
+) -> Vec<IdentifierSet> {
   let mut visited_modules: IdentifierSet = Default::default();
-  let mut visited_chunks: UkeySet<ChunkUkey> = Default::default();
-  let mut stages: Vec<(IdentifierSet, UkeySet<ChunkUkey>)> = stages
+  let mut stages: Vec<IdentifierSet> = stages
     .iter()
     .map(|stage| {
       let BetterChunkStage {
@@ -1706,7 +1731,6 @@ pub(crate) fn pick_stage_chunks(
         entries,
         modules: stage_module_names,
       } = stage;
-      let mut chunks: UkeySet<ChunkUkey> = Default::default();
       let mut modules: IdentifierSet = Default::default();
       if modules.len() > 0 {
         let mg = compilation.get_module_graph();
@@ -1724,14 +1748,7 @@ pub(crate) fn pick_stage_chunks(
               .then_some(module.identifier())
           })
           .collect::<IdentifierSet>();
-        let chunk_ids = module_ids
-          .iter()
-          .map(|&module_id| compilation.chunk_graph.get_module_chunks(module_id).iter())
-          .flatten()
-          .cloned()
-          .collect::<UkeySet<ChunkUkey>>();
         modules.extend(module_ids);
-        chunks.extend(chunk_ids);
       }
       if shared.len() > 0 {
         if strict {
@@ -1751,26 +1768,15 @@ pub(crate) fn pick_stage_chunks(
           .for_each(|(module, chunk, deps)| {
             modules.insert(*module);
             modules.extend(deps);
-            chunks.insert(*chunk);
-            chunks.extend(
-              deps
-                .iter()
-                .map(|dep| compilation.chunk_graph.get_module_chunks(*module).iter())
-                .flatten()
-                .collect::<UkeySet<_>>(),
-            );
           });
       }
       if entries.len() > 0 {
-        let entry_ = pick_entry_module_chunk(compilation, entries);
-        chunks.extend(entry_.1);
-        modules.extend(entry_.0);
+        let entry_ = pick_entry_modules(compilation, entries);
+        modules.extend(entry_);
       }
       modules.retain(|module| !visited_modules.contains(module));
-      chunks.retain(|chunk| !visited_chunks.contains(chunk));
-      visited_modules.extend(modules.clone());
-      visited_chunks.extend(chunks.clone());
-      (modules, chunks)
+      visited_modules.extend(&modules);
+      modules
     })
     .collect();
   if keep_magic_chunks.len() > 0 {
@@ -1802,10 +1808,8 @@ pub(crate) fn pick_stage_chunks(
             .cloned()
             .collect::<IdentifierSet>();
           modules.retain(|module| !visited_modules.contains(module));
-          chunks.retain(|chunk| !visited_chunks.contains(chunk));
-          visited_modules.extend(modules.clone());
-          visited_chunks.extend(chunks.clone());
-          stages.push((modules, chunks));
+          visited_modules.extend(&modules);
+          stages.push(modules);
         });
     });
   }
@@ -1829,14 +1833,44 @@ impl SplitChunksPlugin {
     let start = logger.time("make better_chunks");
 
     let shared_module_chunk_map = pick_shared_module_chunk(compilation);
-
     let strict = options.strict;
     let log = options.log;
+
+    let stage_modules = pick_stage_modules(
+      compilation,
+      &options.stages,
+      &shared_module_chunk_map,
+      &options.keep_magic_chunks,
+      strict,
+    );
+
     if log {
       logger.info(format!("BetterChunkOptions {:#?}", &options));
       logger.info(format!(
+        "stage_modules {:#?}",
+        &stage_modules.iter().map(|v| v.len()).collect::<Vec<_>>()
+      ));
+      logger.info(format!(
         "shared_module_chunk_map {:#?}",
-        &shared_module_chunk_map.keys()
+        &shared_module_chunk_map
+          .iter()
+          .map(|(k, v)| {
+            (
+              k.clone(),
+              v.2
+                .iter()
+                .filter_map(|m| {
+                  compilation
+                    .module_by_identifier(m)
+                    .unwrap()
+                    .name_for_condition()
+                    .map(|name| name.to_string())
+                })
+                .collect::<HashSet<String>>()
+                .len(),
+            )
+          })
+          .collect::<HashMap<_, _>>()
       ));
     }
 
@@ -1860,28 +1894,14 @@ impl SplitChunksPlugin {
     if options.remove_duplicate_modules {
       chunk_mutation.find_duplicate_modules(compilation);
 
-      let stage_module_chunks = pick_stage_chunks(
-        compilation,
-        &options.stages,
-        &shared_module_chunk_map,
-        &options.keep_magic_chunks,
-        strict,
-      );
-
-      chunk_mutation.remove_duplicate_modules(compilation, stage_module_chunks);
+      chunk_mutation.remove_duplicate_modules(compilation, &stage_modules);
 
       chunk_mutation.remove_empty_chunks(compilation);
 
-      let stage_module_chunks = pick_stage_chunks(
-        compilation,
-        &options.stages,
-        &shared_module_chunk_map,
-        &options.keep_magic_chunks,
-        strict,
-      );
+      let stage_chunks = pick_chunks_from_modules(compilation, &stage_modules);
 
-      let optimize_result =
-        chunk_mutation.optimize_stage_module_chunks(compilation, stage_module_chunks);
+      let optimize_result = chunk_mutation.optimize_stage_module_chunks(compilation, stage_chunks);
+
       optimize_result
         .iter()
         .for_each(|(origin_size, removed_size)| {
@@ -1896,15 +1916,8 @@ impl SplitChunksPlugin {
     }
 
     if log {
-      let stage_module_chunks = pick_stage_chunks(
-        compilation,
-        &options.stages,
-        &shared_module_chunk_map,
-        &options.keep_magic_chunks,
-        strict,
-      );
       let mg = compilation.get_module_graph();
-      for (index, (module_ids, _)) in stage_module_chunks.iter().enumerate() {
+      for (index, module_ids) in stage_modules.iter().enumerate() {
         let mut module_names = vec![];
         for module_id in module_ids {
           let module = mg.module_by_identifier(&module_id).unwrap();
@@ -1912,25 +1925,20 @@ impl SplitChunksPlugin {
             module_names.push(name);
           }
         }
-        logger.info(format!("stage {} {:#?}", index, &module_names.len(),));
+        logger.info(format!("stage {} {:#?}", index, &module_names.len()));
       }
     }
 
     if options.concat_small_chunks {
-      let stage_module_chunks = pick_stage_chunks(
-        compilation,
-        &options.stages,
-        &shared_module_chunk_map,
-        &options.keep_magic_chunks,
-        strict,
-      );
+      let stage_chunks = pick_chunks_from_modules(compilation, &stage_modules);
+
       chunk_mutation.concat_chunks(
         &options
           .concat_chunk_sizes
           .unwrap_or((600 * 1024, 800 * 1024)),
         compilation,
         split_group_point,
-        stage_module_chunks,
+        stage_chunks,
         options.concat_unrelated_chunks,
       );
 

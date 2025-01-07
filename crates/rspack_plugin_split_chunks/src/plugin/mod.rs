@@ -15,7 +15,6 @@ use rustc_hash::FxHashMap;
 
 use crate::common::FallbackCacheGroup;
 use crate::module_group::ModuleGroup;
-use crate::plugin::better_chunk::pick_entry_module_chunk;
 use crate::{CacheGroup, SplitChunkSizes};
 
 type ModuleGroupMap = FxHashMap<String, ModuleGroup>;
