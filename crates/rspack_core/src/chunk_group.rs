@@ -328,7 +328,7 @@ impl ChunkGroup {
     &self.origins
   }
 
-  pub fn children(&self) -> &UkeySet<ChunkGroupUkey> {
+  pub fn children(&self) -> &IndexSet<ChunkGroupUkey> {
     &self.children
   }
 

@@ -18,13 +18,13 @@ use rspack_napi::string::JsStringExt;
 use rspack_plugin_split_chunks::ChunkNameGetter;
 use rspack_regex::RspackRegex;
 
+use self::better_chunk_options::RawBetterChunkOptions;
 use self::raw_split_chunk_cache_group_test::default_cache_group_test;
 use self::raw_split_chunk_cache_group_test::normalize_raw_cache_group_test;
 use self::raw_split_chunk_cache_group_test::RawCacheGroupTest;
 use self::raw_split_chunk_chunks::{create_chunks_filter, Chunks};
 use self::raw_split_chunk_name::default_chunk_option_name;
 use self::raw_split_chunk_size::RawSplitChunkSizes;
-use crate::options::raw_split_chunks::better_chunk_options::RawBetterChunkOptions;
 use crate::JsFilename;
 
 #[napi(object, object_to_js = false)]

@@ -735,10 +735,12 @@ impl ChunkMutation {
     module_id: ModuleIdentifier,
     compilation: &mut Compilation,
   ) {
-    let [origin_chunk, new_chunk] = compilation
+    let [Some(origin_chunk), Some(new_chunk)] = compilation
       .chunk_by_ukey
       .get_many_mut([&origin_chunk_key, &new_chunk_key])
-      .expect("[relink_module_to_chunk] chunk not found in compilation");
+    else {
+      panic!("should have both chunks")
+    };
     let chunk_group_by_ukey = &mut compilation.chunk_group_by_ukey;
 
     origin_chunk
@@ -889,10 +891,12 @@ impl ChunkMutation {
           return;
         };
         // Self::relink_module_to_chunk(chunk.chunk_key, new_chunk_ukey, module_id, compilation);
-        let [new_chunk, origin] = compilation
+        let [Some(new_chunk), Some(origin)] = compilation
           .chunk_by_ukey
           .get_many_mut([&new_chunk_ukey, &chunk.chunk_key])
-          .expect("should have both chunks");
+        else {
+          panic!("should have both chunks")
+        };
         origin.split(new_chunk, &mut compilation.chunk_group_by_ukey);
         *new_chunk.chunk_reason_mut() =
           Some(String::from("BetterChunk split from duplicate modules"));
@@ -1544,10 +1548,12 @@ impl ChunkMutation {
           .skip(1)
           .for_each(|module_ids| {
             let new_chunk_key = self.new_chunk(compilation);
-            let [origin, new] = compilation
+            let [Some(origin), Some(new)] = compilation
               .chunk_by_ukey
               .get_many_mut([&chunk_key, &new_chunk_key])
-              .expect("");
+            else {
+              panic!("")
+            };
             origin.split(new, &mut compilation.chunk_group_by_ukey);
             if let Some(mutations) = compilation.incremental.mutations_write() {
               mutations.add(Mutation::ChunkSplit {
