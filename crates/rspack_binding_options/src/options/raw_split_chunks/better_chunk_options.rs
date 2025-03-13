@@ -27,8 +27,8 @@ pub struct RawBetterChunkOptions {
   pub concat_unrelated_chunks: Option<bool>,
   pub skip_concat_chunks: Option<Vec<String>>,
   pub split_big_chunks: Option<bool>,
-  pub split_chunk_sizes: Option<Vec<u32>>,
-  pub concat_chunk_sizes: Option<Vec<u32>>,
+  pub split_chunk_sizes: Option<Vec<f64>>,
+  pub concat_chunk_sizes: Option<Vec<f64>>,
 }
 
 fn vec_to_tuple<T>(v: Vec<T>) -> (T, T)
